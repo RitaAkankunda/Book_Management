@@ -3,5 +3,5 @@ from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('', include('books.urls')),  # This includes all the API endpoints
+    path('api/', include('books.urls')),  # API endpoints under /api/
 ]
