@@ -13,8 +13,12 @@ urlpatterns = [    # Authentication endpoints
     path('register/', views.RegisterView.as_view(), name='register'),
     path('logout/', views.LogoutView.as_view(), name='logout'),
     
+    # User management endpoints (admin only)
+    path('', views.UserListView.as_view(), name='user_list'),  # List all users
+    
     # Profile endpoints
-    path('profile/', views.UserProfileView.as_view(), name='profile'),
+    path('profile/', views.UserProfileView.as_view(), name='profile'),  # Own profile
+    path('profile/<int:user_id>/', views.UserProfileView.as_view(), name='user_profile'),  # Other user's profile (admin)
     
     # Password management
     path('change-password/', views.ChangePasswordView.as_view(), name='change_password'),

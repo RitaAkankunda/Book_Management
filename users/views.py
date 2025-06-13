@@ -1,5 +1,5 @@
 from django.shortcuts import render
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -10,6 +10,8 @@ from django.core.mail import send_mail
 from django.conf import settings
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
+from django_filters.rest_framework import DjangoFilterBackend
+from .permissions import IsAdmin, IsModerator
 from .serializers import (
     UserSerializer, 
     UserUpdateSerializer, 
@@ -25,23 +27,52 @@ class RegisterView(generics.CreateAPIView):
     """
     Register a new user
     POST /api/users/register/
+    
+    Note: By default, new users are registered with 'USER' role.
+    Only admins can create users with 'ADMIN' or 'MODERATOR' roles.
     """
     queryset = User.objects.all()
     permission_classes = (permissions.AllowAny,)
     serializer_class = UserSerializer
 
+    def perform_create(self, serializer):
+        # If user is not admin, force role to be 'USER'
+        if not (self.request.user and self.request.user.is_authenticated and self.request.user.role == 'ADMIN'):
+            serializer.validated_data['role'] = 'USER'
+        serializer.save()
+
 
 class UserProfileView(generics.RetrieveUpdateAPIView):
     """
     Get or update user profile
-    GET /api/users/profile/
-    PUT /api/users/profile/
+    GET /api/users/profile/ - Get own profile
+    GET /api/users/profile/{id}/ - Get other user's profile (admin only)
+    PUT /api/users/profile/ - Update own profile
+    PATCH /api/users/profile/ - Partially update own profile
     """
-    serializer_class = UserUpdateSerializer
     permission_classes = (permissions.IsAuthenticated,)
+    serializer_class = UserSerializer
+
+    def get_serializer_class(self):
+        if self.request.method in ['PUT', 'PATCH']:
+            return UserUpdateSerializer
+        return UserSerializer
 
     def get_object(self):
+        # If user_id is provided in URL and user is admin, get that user
+        user_id = self.kwargs.get('user_id')
+        if user_id and self.request.user.role == 'ADMIN':
+            return User.objects.get(id=user_id)
+        # Otherwise, get own profile
         return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
 
 
 class ChangePasswordView(generics.UpdateAPIView):
@@ -111,8 +142,7 @@ class PasswordResetRequestView(generics.GenericAPIView):
         
         # Create password reset link
         reset_url = f"{settings.FRONTEND_URL}/reset-password/{uid}/{token}/"
-        
-        # Send email
+          # Send email
         send_mail(
             subject="Password Reset Request",
             message=f"Click the following link to reset your password: {reset_url}",
@@ -121,35 +151,45 @@ class PasswordResetRequestView(generics.GenericAPIView):
             fail_silently=False,
         )
         
-        return Response(
-            {"message": "Password reset email has been sent."},
-            status=status.HTTP_200_OK
-        )
+        response_data = {
+            "message": "Password reset email has been sent."
+        }
+        
+        # In development, include the token and UID for testing
+        if settings.DEBUG:
+            response_data.update({
+                "debug_info": {
+                    "uid": uid,
+                    "token": token,
+                }
+            })
+        
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class PasswordResetConfirmView(generics.GenericAPIView):
     """
     Confirm password reset with token
-    POST /api/users/password-reset-confirm/
+    POST /api/users/password-reset-confirm/{uidb64}/{token}/
     """
     permission_classes = (permissions.AllowAny,)
     serializer_class = ResetPasswordConfirmSerializer
-
+    
     def post(self, request, uidb64, token):
         try:
             # Decode the user ID
             uid = force_str(urlsafe_base64_decode(uidb64))
             user = User.objects.get(pk=uid)
             
-            # Validate token
+            # Validate token from URL
             if not default_token_generator.check_token(user, token):
                 return Response(
-                    {"error": "Invalid token"},
+                    {"error": "Invalid or expired reset link."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
                 
-            # Validate password
-            serializer = self.get_serializer(data=request.data)
+            # Validate password in request body
+            serializer = ResetPasswordConfirmSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             
             # Set new password
@@ -170,7 +210,33 @@ class PasswordResetConfirmView(generics.GenericAPIView):
 
 class LoginView(TokenObtainPairView):
     """
-    Login view that returns user info along with tokens
+    Login user and return JWT token
     POST /api/users/login/
     """
     serializer_class = LoginSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.user
+        token = serializer.validated_data
+        
+        return Response({
+            'access': token['access'],
+            'refresh': token['refresh'],
+            'user': UserSerializer(user).data
+        })
+
+
+class UserListView(generics.ListAPIView):
+    """
+    List all users (admin only)
+    GET /api/users/
+    """
+    queryset = User.objects.all()
+    serializer_class = UserSerializer
+    permission_classes = [IsAdmin]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['username', 'email', 'first_name', 'last_name']
+    ordering_fields = ['username', 'date_joined']
+    ordering = ['-date_joined']  # Default ordering

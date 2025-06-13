@@ -1,92 +1,107 @@
 # books/views.py
 
-from rest_framework import generics, filters, status
+from rest_framework import generics, filters, status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticatedOrReadOnly, AllowAny
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import Category, Author, Book
+from users.permissions import IsAdmin, IsModerator
 from .serializers import (
     CategorySerializer, 
     AuthorSerializer, 
     BookListSerializer, 
     BookSerializer
 )
+from users.permissions import IsAdmin, IsModerator
 
 
 # Category Views
 class CategoryListCreateView(generics.ListCreateAPIView):
     """
-    GET: List all categories
-    POST: Create a new category
+    GET: List all categories (any authenticated user)
+    POST: Create a new category (admin only)
     """
-    permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'description']
 
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAdmin()]
+        return [permissions.IsAuthenticated()]
+
 
 class CategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
-    GET: Retrieve a specific category
-    PUT/PATCH: Update a category
-    DELETE: Delete a category
+    GET: Retrieve a specific category (any authenticated user)
+    PUT/PATCH: Update a category (admin only)
+    DELETE: Delete a category (admin only)
     """
-    permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
+    
+    def get_permissions(self):
+        if self.request.method in ['PUT', 'PATCH', 'DELETE']:
+            return [IsAdmin()]
+        return [permissions.IsAuthenticated()]
 
 
 # Author Views
 class AuthorListCreateView(generics.ListCreateAPIView):
     """
-    GET: List all authors
-    POST: Create a new author
+    GET: List all authors (any authenticated user)
+    POST: Create a new author (admin or moderator only)
     """
-    permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['first_name', 'last_name', 'email']
     ordering_fields = ['first_name', 'last_name', 'created_at']
     ordering = ['last_name']  # Default ordering
+    
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsModerator()]
+        return [permissions.IsAuthenticated()]
 
 
 class AuthorDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
-    GET: Retrieve a specific author
-    PUT/PATCH: Update an author
-    DELETE: Delete an author
+    GET: Retrieve a specific author (any authenticated user)
+    PUT/PATCH: Update an author (admin or moderator only)
+    DELETE: Delete an author (admin only)
     """
-    permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
+    
+    def get_permissions(self):
+        if self.request.method == 'DELETE':
+            return [IsAdmin()]
+        elif self.request.method in ['PUT', 'PATCH']:
+            return [IsModerator()]
+        return [permissions.IsAuthenticated()]
 
 
 # Book Views
 class BookListCreateView(generics.ListCreateAPIView):
     """
-    GET: List all books (uses simple serializer for performance)
-    POST: Create a new book
+    GET: List all books (any authenticated user)
+    POST: Create a new book (admin or moderator only)
     """
-    permission_classes = [IsAuthenticatedOrReadOnly]
-    queryset = Book.objects.select_related('category').prefetch_related('authors')
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['title', 'description', 'authors__first_name', 'authors__last_name']
-    filterset_fields = ['category', 'authors']
-    ordering_fields = ['title', 'price', 'created_at']
-    ordering = ['-created_at']  # Newest first
+    queryset = Book.objects.all()
+    serializer_class = BookSerializer
+    filter_backends = [filters.SearchFilter, DjangoFilterBackend, filters.OrderingFilter]
+    search_fields = ['title', 'isbn', 'authors__first_name', 'authors__last_name']
+    filterset_fields = ['category', 'authors', 'is_active']
+    ordering_fields = ['title', 'created_at', 'price', 'stock_quantity']
+    ordering = ['-created_at']  # Default ordering
     
-    def get_serializer_class(self):
-        """
-        Use different serializers for different actions:
-        - List: Simple serializer (faster)
-        - Create: Detailed serializer (handles relationships)
-        """
+    def get_permissions(self):
         if self.request.method == 'POST':
-            return BookSerializer
-        return BookListSerializer
+            return [IsModerator()]
+        return [permissions.IsAuthenticated()]
     
     def perform_create(self, serializer):
         """Set the current user as the creator when creating a book"""
@@ -95,13 +110,19 @@ class BookListCreateView(generics.ListCreateAPIView):
 
 class BookDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
-    GET: Retrieve a specific book with full details
-    PUT/PATCH: Update a book
-    DELETE: Delete a book
+    GET: Retrieve a specific book with full details (any authenticated user)
+    PUT/PATCH: Update a book (admin or moderator only)
+    DELETE: Delete a book (admin only)
     """
-    permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Book.objects.select_related('category', 'created_by').prefetch_related('authors')
     serializer_class = BookSerializer
+    
+    def get_permissions(self):
+        if self.request.method == 'DELETE':
+            return [IsAdmin()]
+        elif self.request.method in ['PUT', 'PATCH']:
+            return [IsModerator()]
+        return [permissions.IsAuthenticated()]
 
 
 # Custom API Views (using function-based views for specific functionality)
@@ -187,10 +208,10 @@ def books_in_stock(request):
 
 
 @api_view(['PUT'])
-@permission_classes([IsAuthenticatedOrReadOnly])
+@permission_classes([IsModerator])
 def update_book_stock(request, book_id):
     """
-    Update the stock quantity of a book
+    Update the stock quantity of a book (admin or moderator only)
     URL: /api/books/{book_id}/update-stock/
     """
     try:

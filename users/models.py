@@ -70,3 +70,8 @@ class User(AbstractUser):
     def is_moderator(self):
         """Check if user has moderator role"""
         return self.role == 'MODERATOR'
+    
+    @property
+    def is_regular_user(self):
+        """Check if user has regular user role"""
+        return self.role == 'USER'

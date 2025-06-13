@@ -12,19 +12,38 @@ class UserSerializer(serializers.ModelSerializer):
     )
     password = serializers.CharField(
         write_only=True,
-        required=True,
+        required=False,  # Not required for GET requests
         validators=[validate_password]
     )
-    password2 = serializers.CharField(write_only=True, required=True)
-    role = serializers.ChoiceField(choices=[('ADMIN', 'Admin'), ('MODERATOR', 'Moderator'), ('USER', 'User')], default='USER')
+    password2 = serializers.CharField(write_only=True, required=False)  # Not required for GET requests
+    role = serializers.ChoiceField(
+        choices=[('ADMIN', 'Admin'), ('MODERATOR', 'Moderator'), ('USER', 'User')],
+        default='USER'
+    )
+    full_name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('username', 'password', 'password2', 'email', 'first_name', 'last_name', 'role')
+        fields = ('id', 'username', 'password', 'password2', 'email', 'first_name', 
+                 'last_name', 'full_name', 'role', 'date_joined', 'last_login')
         extra_kwargs = {
             'first_name': {'required': True},
-            'last_name': {'required': True}
+            'last_name': {'required': True},
+            'password': {'write_only': True},
+            'password2': {'write_only': True},
         }
+    
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}"
+    
+    def to_representation(self, instance):
+        """Customize the output based on the request method"""
+        ret = super().to_representation(instance)
+        if self.context.get('request') and self.context['request'].method == 'GET':
+            # Remove password fields from GET requests
+            ret.pop('password', None)
+            ret.pop('password2', None)
+        return ret
 
     def validate(self, attrs):
         if attrs['password'] != attrs['password2']:
@@ -52,14 +71,15 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(
+        required=True,
+        validators=[UniqueValidator(queryset=User.objects.all())]
+    )
     class Meta:
         model = User
-        fields = ('email', 'first_name', 'last_name')
-        extra_kwargs = {
-            'email': {'required': True},
-            'first_name': {'required': True},
-            'last_name': {'required': True}
-        }
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'role', 
+                 'bio', 'date_of_birth', 'profile_picture')
+        read_only_fields = ('id', 'username', 'role')  # These fields cannot be changed via profile update
 
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -86,7 +106,6 @@ class ResetPasswordEmailSerializer(serializers.Serializer):
 
 class ResetPasswordConfirmSerializer(serializers.Serializer):
     """Serializer for confirming a password reset"""
-    token = serializers.CharField(required=True)
     new_password = serializers.CharField(required=True, validators=[validate_password])
     new_password2 = serializers.CharField(required=True)
 
@@ -98,18 +117,14 @@ class ResetPasswordConfirmSerializer(serializers.Serializer):
 class LoginSerializer(TokenObtainPairSerializer):
     """Custom login serializer that adds user information to the token response"""
     def validate(self, attrs):
-        # Get the token data from parent class
         data = super().validate(attrs)
-        
-        # Add extra user information to response
-        user = self.user
-        data.update({
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'first_name': user.first_name,
-            'last_name': user.last_name,
-            'role': user.role
-        })
-        
+        # Add custom claims
+        data['user'] = {
+            'id': self.user.id,
+            'username': self.user.username,
+            'email': self.user.email,
+            'role': self.user.role,
+            'first_name': self.user.first_name,
+            'last_name': self.user.last_name
+        }
         return data
